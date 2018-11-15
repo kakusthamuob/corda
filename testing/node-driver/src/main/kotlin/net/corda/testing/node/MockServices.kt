@@ -8,9 +8,9 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StateMachineRunId
 import net.corda.core.identity.CordaX500Name
+import net.corda.core.identity.Party
 import net.corda.core.identity.PartyAndCertificate
 import net.corda.core.internal.SignedDataWithCert
-import net.corda.core.internal.isUploaderTrusted
 import net.corda.core.messaging.DataFeed
 import net.corda.core.messaging.FlowHandle
 import net.corda.core.messaging.FlowProgressHandle
@@ -23,6 +23,7 @@ import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.node.VersionInfo
 import net.corda.node.cordapp.CordappLoader
+import net.corda.node.internal.NodeParametersStorageInternal
 import net.corda.node.internal.ServicesForResolutionImpl
 import net.corda.node.internal.cordapp.JarScanningCordappLoader
 import net.corda.node.services.api.*
@@ -30,6 +31,7 @@ import net.corda.node.services.identity.InMemoryIdentityService
 import net.corda.node.services.schema.NodeSchemaService
 import net.corda.node.services.transactions.InMemoryTransactionVerifierService
 import net.corda.node.services.vault.NodeVaultService
+import net.corda.nodeapi.internal.network.verifiedNetworkMapCert
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
 import net.corda.nodeapi.internal.persistence.contextTransaction
@@ -38,10 +40,10 @@ import net.corda.testing.core.TestIdentity
 import net.corda.testing.internal.DEV_ROOT_CA
 import net.corda.testing.internal.MockCordappProvider
 import net.corda.testing.internal.configureDatabase
-import net.corda.testing.internal.rigorousMock
 import net.corda.testing.node.internal.*
 import net.corda.testing.services.MockAttachmentStorage
 import java.security.KeyPair
+import java.security.cert.X509Certificate
 import java.sql.Connection
 import java.time.Clock
 import java.time.Instant
@@ -186,6 +188,7 @@ open class MockServices private constructor(
     @JvmOverloads
     constructor(cordappPackages: Iterable<String>, initialIdentityName: CordaX500Name, identityService: IdentityService = makeTestIdentityService(), key: KeyPair, vararg moreKeys: KeyPair) :
             this(cordappPackages, TestIdentity(initialIdentityName, key), identityService, *moreKeys)
+
     /**
      * Create a mock [ServiceHub] that can't load CorDapp code, which uses the provided identity service
      * (you can get one from [makeTestIdentityService]) and which represents the given identity.
@@ -325,11 +328,30 @@ fun <T : SerializeAsToken> createMockCordaService(serviceHub: MockServices, serv
     return MockAppServiceHubImpl(serviceHub, serviceConstructor).serviceInstance
 }
 
-class MockNetworkParametersStorage(val currentParameters: NetworkParameters = testNetworkParameters(modifiedTime = Instant.MIN)) : NetworkParametersStorage {
+class MockNetworkParametersStorage(private var currentParameters: NetworkParameters = testNetworkParameters(modifiedTime = Instant.MIN)) : NodeParametersStorageInternal {
     private val hashToParametersMap: HashMap<SecureHash, NetworkParameters> = HashMap()
+
     init {
-        hashToParametersMap[currentParametersHash] = currentParameters
+        storeCurrentParameters()
     }
+
+    fun setCurrentParametersUnverified(networkParameters: NetworkParameters) {
+        currentParameters = networkParameters
+        storeCurrentParameters()
+    }
+
+    override fun setCurrentParameters(currentSignedParameters: SignedDataWithCert<NetworkParameters>, trustRoot: X509Certificate) {
+        setCurrentParametersUnverified(currentSignedParameters.verifiedNetworkMapCert(trustRoot))
+    }
+
+    override fun isNotary(party: Party): Boolean {
+        return getNotaryInfo(party) != null
+    }
+
+    override fun isValidatingNotary(party: Party): Boolean {
+        return getNotaryInfo(party)?.validating ?: throw IllegalStateException("Party $party is not a notary on the network")
+    }
+
     override val currentParametersHash: SecureHash get() = currentParameters.serialize().hash
     override val defaultParametersHash: SecureHash get() = currentParametersHash
     override fun getEpochFromHash(hash: SecureHash): Int?  = readParametersFromHash(hash)?.epoch
@@ -338,5 +360,19 @@ class MockNetworkParametersStorage(val currentParameters: NetworkParameters = te
         val networkParameters = signedNetworkParameters.verified()
         val hash = signedNetworkParameters.raw.hash
         hashToParametersMap[hash] = networkParameters
+    }
+
+    private fun getNotaryInfo(party: Party): NotaryInfo? {
+        val inCurrentParams = currentParameters.notaries.singleOrNull { it.identity == party }
+        if (inCurrentParams == null) {
+            val inOldParams = hashToParametersMap.flatMap { (_, parameters) ->
+                parameters.notaries
+            }.singleOrNull { it.identity == party }
+            return inOldParams
+        } else return inCurrentParams
+    }
+
+    private fun storeCurrentParameters() {
+        hashToParametersMap[currentParametersHash] = currentParameters
     }
 }
