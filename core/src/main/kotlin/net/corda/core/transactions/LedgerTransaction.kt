@@ -53,9 +53,10 @@ private constructor(
         val timeWindow: TimeWindow?,
         val privacySalt: PrivacySalt,
         val networkParameters: NetworkParameters?,
-        override val references: List<StateAndRef<ContractState>>
+        override val references: List<StateAndRef<ContractState>>,
+        val inputStatesContractClassNameToVersions: Map<ContractClassName,Set<Version>>
         //DOCEND 1
-) : FullTransaction() {
+)  : FullTransaction() {
     // These are not part of the c'tor above as that defines LedgerTransaction's serialisation format
     private var componentGroups: List<ComponentGroup>? = null
     private var serializedInputs: List<SerializedStateAndRef>? = null
@@ -127,7 +128,7 @@ private constructor(
 
             val internalTx = createLtxForVerification()
 
-            // TODO - verify for version downgrade
+            validateContractVersions(contractAttachmentsByContract)
             validatePackageOwnership(contractAttachmentsByContract)
             validateStatesAgainstContract(internalTx)
             verifyConstraintsValidity(internalTx, contractAttachmentsByContract, transactionClassLoader)
@@ -136,6 +137,15 @@ private constructor(
         }
     }
 
+    private fun validateContractVersions(contractAttachmentsByContract: Map<ContractClassName, ContractAttachment>){
+         contractAttachmentsByContract.forEach { contractClassName, attachment ->
+            val version = Version(attachment.openAsJAR().manifest.mainAttributes.getValue("Implementation-Version"))
+            val ok = inputStatesContractClassNameToVersions[contractClassName]?.all { version >= it } ?: true
+            if (!ok) {
+                throw TransactionVerificationException.TransactionContractClassVersionDowngradation(this.id, contractClassName, version.toString())
+            }
+        }
+    }
     /**
      * For all input and output [TransactionState]s, validates that the wrapped [ContractState] matches up with the
      * wrapped [Contract], as declared by the [BelongsToContract] annotation on the [ContractState]'s class.
