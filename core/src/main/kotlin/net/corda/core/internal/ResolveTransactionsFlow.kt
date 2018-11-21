@@ -12,6 +12,7 @@ import net.corda.core.transactions.ContractUpgradeWireTransaction
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.WireTransaction
 import net.corda.core.utilities.exactAdd
+import java.lang.IllegalArgumentException
 import java.util.*
 import kotlin.collections.ArrayList
 import kotlin.math.min
@@ -62,6 +63,17 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
 
     /** Transaction to fetch attachments for. */
     private var signedTransaction: SignedTransaction? = null
+    private val rootParametersEpoch: Int by lazy {
+        val stx = signedTransaction
+        with(serviceHub.networkParametersStorage) {
+            val rootHash = if (stx == null) {
+                currentParametersHash
+            } else {
+                stx.networkParametersHash ?: defaultParametersHash
+            }
+            getEpochFromHash(rootHash) ?: throw IllegalArgumentException("TODO")
+        }
+    }
 
     // TODO: Figure out a more appropriate DOS limit here, 5000 is simply a very bad guess.
     /** The maximum number of transactions this flow will try to download before bailing out. */
@@ -75,13 +87,25 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
     @Throws(FetchDataFlow.HashNotFound::class, FetchDataFlow.IllegalTransactionRequest::class)
     override fun call() {
         val newTxns = ArrayList<SignedTransaction>(txHashes.size)
+//        newTxns.forEach { newStx ->
+//            val paramsHash = newStx.getParametersHash()
+//            val resolvedParams = serviceHub.networkParametersStorage.readParametersFromHash(paramsHash)
+//            if (resolvedParams.epoch > resolvedRootParams.epoch) {
+//                throw IllegalArgumentException("Network parameters are not ordered in the transaction graph " +
+//                        "for dependency transaction: ${newStx.id} and depender transaction: ${signedTransaction?.id}") // TODO what exception
+//            }
+//        }
+
         // Start fetching data.
+        // TODO on this level checking the parameters epoch is easy
         for (pageNumber in 0..(txHashes.size - 1) / RESOLUTION_PAGE_SIZE) {
             val page = page(pageNumber, RESOLUTION_PAGE_SIZE)
 
             newTxns += downloadDependencies(page)
-            val txsWithMissingAttachments = if (pageNumber == 0) signedTransaction?.let { newTxns + it } ?: newTxns else newTxns
+            val txsWithMissingAttachments = if (pageNumber == 0) signedTransaction?.let { newTxns + it }
+                    ?: newTxns else newTxns
             fetchMissingAttachments(txsWithMissingAttachments)
+            fetchMissingParameters(txsWithMissingAttachments)
         }
         otherSide.send(FetchDataFlow.Request.End)
         // Finish fetching data.
@@ -96,6 +120,13 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
             serviceHub.recordTransactions(StatesToRecord.NONE, listOf(it))
         }
     }
+
+    private fun SignedTransaction.getParametersHash(): SecureHash = networkParametersHash
+            ?: serviceHub.networkParametersStorage.defaultParametersHash
+//
+//    private fun SecureHash.getParameters(): NetworkParameters = serviceHub.networkParametersStorage.let {
+//        it.readParametersFromHash(this) ?: it.defaultParameters
+//    }
 
     private fun page(pageNumber: Int, pageSize: Int): Set<SecureHash> {
         val offset = pageNumber * pageSize
@@ -129,9 +160,11 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
 
         val limit = transactionCountLimit
         var limitCounter = 0
+        var levelParametersVersion = rootParametersEpoch
         while (nextRequests.isNotEmpty()) {
             // Don't re-download the same tx when we haven't verified it yet but it's referenced multiple times in the
             // graph we're traversing.
+            // todo use notAlreadyFetched as it level by level in a graphcore
             val notAlreadyFetched: Set<SecureHash> = nextRequests - resultQ.keys
             nextRequests.clear()
 
@@ -142,8 +175,11 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
             // TODO use paging here
             val downloads: List<SignedTransaction> = subFlow(FetchTransactionsFlow(notAlreadyFetched, otherSide)).downloaded
 
-            for (stx in downloads)
+            for (stx in downloads) {
+//                val resolvedParametersVersion = serviceHub.networkParametersStorage.readParametersFromHash(stx.networkParametersHash)?.epoch
+//                check(levelParametersVersion >= resolvedParametersVersion)
                 check(resultQ.putIfAbsent(stx.id, stx) == null)   // Assert checks the filter at the start.
+            }
 
             // Add all input states and reference input states to the work queue.
             val inputHashes = downloads.flatMap { it.inputs + it.references }.map { it.txhash }
@@ -171,7 +207,19 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
             }
         }
         val missingAttachments = attachments.filter { serviceHub.attachments.openAttachment(it) == null }
+        // TODO: We could fetch parameters using attachments too and put them into the NetworkParametersStorage after signature checking.
         if (missingAttachments.isNotEmpty())
             subFlow(FetchAttachmentsFlow(missingAttachments.toSet(), otherSide))
+    }
+
+    // TODO proper testing
+    // TODO This can also be done in parallel.
+    @Suspendable
+    private fun fetchMissingParameters(downloads: List<SignedTransaction>) {
+        // TODO can do check on epoch here
+        val parameters = downloads.mapNotNull { it.networkParametersHash }
+        val missingParameters = parameters.filter { !serviceHub.networkParametersStorage.hasParameters(it) }
+        if (missingParameters.isNotEmpty())
+            subFlow(FetchNetworkParametersFlow(missingParameters.toSet(), otherSide))
     }
 }

@@ -74,11 +74,16 @@ class NodeParametersStorage(
         return database.transaction { hashToParameters[hash]?.raw?.deserialize() } ?: tryDownloadUnknownParameters(hash)
     }
 
+    override fun readSignedParameters(hash: SecureHash): SignedDataWithCert<NetworkParameters>? {
+        return database.transaction { hashToParameters[hash] }
+    }
+
+    override fun hasParameters(hash: SecureHash): Boolean = hash in hashToParameters
     override fun getEpochFromHash(hash: SecureHash): Int? = readParametersFromHash(hash)?.epoch
 
     override fun saveParameters(signedNetworkParameters: SignedNetworkParameters) {
         log.trace { "Saving new network parameters to network parameters storage." }
-        val networkParameters = signedNetworkParameters.verified()
+        val networkParameters = signedNetworkParameters.verifiedNetworkMapCert(trustRoot)
         val hash = signedNetworkParameters.raw.hash
         log.trace { "Parameters to save $networkParameters with hash $hash" }
         hashToParameters.addWithDuplicatesAllowed(hash, signedNetworkParameters)

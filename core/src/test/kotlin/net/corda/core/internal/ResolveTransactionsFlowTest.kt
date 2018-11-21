@@ -35,9 +35,7 @@ class ResolveTransactionsFlowTest {
     private lateinit var megaCorp: Party
     private lateinit var miniCorp: Party
     private lateinit var notary: Party
-
-    private lateinit var rootTx: SignedTransaction
-
+    
     @Before
     fun setup() {
         mockNet = MockNetwork(cordappPackages = listOf("net.corda.testing.contracts", "net.corda.core.internal"))
@@ -192,6 +190,16 @@ class ResolveTransactionsFlowTest {
         assertFailsWith<FetchDataFlow.IllegalTransactionRequest> { future.getOrThrow() }
     }
 
+    @Test
+    fun `transaction chain out of order parameters`() {
+        // TODO
+    }
+
+    @Test
+    fun `transaction chain in order parameters but topologically out of order`() {
+        // TODO tree 8 in root, 6,5,7,4 in children
+    }
+
     // DOCSTART 2
     private fun makeTransactions(signFirstTX: Boolean = true, withAttachment: SecureHash? = null): Pair<SignedTransaction, SignedTransaction> {
         // Make a chain of custody of dummy states and insert into node A.
@@ -233,6 +241,7 @@ class ResolveTransactionsFlowTest {
             subFlow(resolveTransactionsFlow)
         }
     }
+
     @Suppress("unused")
     @InitiatedBy(TestFlow::class)
     private class TestResponseFlow(val otherSideSession: FlowSession) : FlowLogic<Void?>() {
@@ -250,6 +259,7 @@ class ResolveTransactionsFlowTest {
             subFlow(DataVendingFlow(session, toVend))
         }
     }
+
     @Suppress("unused")
     @InitiatedBy(TestNoRightsVendingFlow::class)
     private open class TestResponseResolveNoRightsFlow(val otherSideSession: FlowSession) : FlowLogic<Unit>() {
@@ -271,6 +281,7 @@ class ResolveTransactionsFlowTest {
             subFlow(DataVendingFlow(session, tx))
         }
     }
+
     @Suppress("unused")
     @InitiatedBy(TestResolveTwiceVendingFlow::class)
     private open class TestResponseResolveTwiceFlow(val otherSideSession: FlowSession) : FlowLogic<Unit>() {

@@ -28,6 +28,17 @@ interface NetworkParametersStorage {
     fun readParametersFromHash(hash: SecureHash): NetworkParameters?
 
     /**
+     * Return signed network parameters with certificate for the given hash. Null if there are no parameters for this hash in the storage.
+     * (No fallback to network map.)
+     */
+    fun readSignedParameters(hash: SecureHash): SignedDataWithCert<NetworkParameters>?
+
+    /**
+     * Checks if parameters with given hash are in the storage.
+     */
+    fun hasParameters(hash: SecureHash): Boolean
+
+    /**
      * Return parameters epoch for the given parameters hash. Null if there are no parameters for this hash in the storage and we are unable to
      * get them from network map.
      */
