@@ -157,7 +157,7 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
 
         val resolvedAttachments = attachments.lazyMapped { att, _ -> resolveAttachment(att) ?: throw AttachmentResolutionException(att) }
 
-        val inputContractClassToJarVersion = resolveContractAttachmentVersion(resolvedInputs.map { Pair(it.state.contract, it.ref) }, resolveAttachment, resolveContractAttachment)
+        val inputContractClassToJarVersion = resolveContractAttachmentVersion(resolvedInputs.map { Pair(it.state.contract, it.ref) }, resolveContractAttachment)
 
         val ltx = LedgerTransaction.create(
                 resolvedInputs,
@@ -328,11 +328,8 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
             }
         }
 
-        //TODO non-downgrade-rule resolveAttachment fun obsolete
         @CordaInternal
-        fun resolveContractAttachmentVersion(states: List<Pair<ContractClassName,StateRef>>,
-                                             resolveAttachment: (SecureHash) -> Attachment?,
-                                             resolveContractAttachment: (StateRef) -> Attachment?)
+        fun resolveContractAttachmentVersion(states: List<Pair<ContractClassName, StateRef>>, resolveContractAttachment: (StateRef) -> Attachment?)
                 : Map<ContractClassName, Set<Version>> {
 
             val contractClassAndAttachment: List<Pair<ContractClassName, Attachment>> = states.map {
