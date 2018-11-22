@@ -53,7 +53,6 @@ interface TestCordapp {
 
     fun withImplementationVersion(version: String): TestCordapp
 
-
     class Factory {
         companion object {
             /**
