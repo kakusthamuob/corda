@@ -76,6 +76,8 @@ internal constructor(private val initSerEnv: Boolean,
 
         private const val LOGS_DIR_NAME = "logs"
 
+        private val jarsThatArentCordapps = setOf("corda.jar", "runnodes.jar")
+
         private fun extractEmbeddedCordaJar(): InputStream {
             return Thread.currentThread().contextClassLoader.getResourceAsStream("corda.jar")
         }
@@ -84,12 +86,12 @@ internal constructor(private val initSerEnv: Boolean,
             val numParallelProcesses = Runtime.getRuntime().availableProcessors()
             val timePerNode = 40.seconds // On the test machine, generating the node info takes 7 seconds for a single node.
             val tExpected = maxOf(timePerNode, timePerNode * nodeDirs.size.toLong() / numParallelProcesses.toLong())
-            val warningTimer = Timer("WarnOnSlowMachines", true).schedule(tExpected.toMillis()) {
-                println("... still waiting. If this is taking longer than usual, check the node logs.")
-            }
-            val executor = Executors.newFixedThreadPool(numParallelProcesses)
-            return try {
-                nodeDirs.map { executor.fork { generateNodeInfo(it) } }.transpose().getOrThrow()
+                val warningTimer = Timer("WarnOnSlowMachines", true).schedule(tExpected.toMillis()) {
+                    println("... still waiting. If this is taking longer than usual, check the node logs.")
+                }
+                val executor = Executors.newFixedThreadPool(numParallelProcesses)
+                return try {
+                    nodeDirs.map { executor.fork { generateNodeInfo(it) } }.transpose().getOrThrow()
             } finally {
                 warningTimer.cancel()
                 executor.shutdownNow()
@@ -180,21 +182,23 @@ internal constructor(private val initSerEnv: Boolean,
      * TODO: Remove once the gradle plugins are updated to 4.0.30
      */
     fun bootstrap(directory: Path, cordappJars: List<Path>) {
-        bootstrap(directory, cordappJars, copyCordapps = true, fromCordform = true)
+        bootstrap(directory, cordappJars, CopyCordapps.Yes, fromCordform = true)
     }
 
     /** Entry point for Cordform */
     fun bootstrapCordform(directory: Path, cordappJars: List<Path>) {
-        bootstrap(directory, cordappJars, copyCordapps = false, fromCordform = true)
+        bootstrap(directory, cordappJars, CopyCordapps.No, fromCordform = true)
     }
 
+    enum class CopyCordapps { OnFirstRun, Yes, No }
+
     /** Entry point for the tool */
-    fun bootstrap(directory: Path, copyCordapps: Boolean, minimumPlatformVersion: Int, packageOwnership: Map<String, PublicKey?> = emptyMap()) {
+    fun bootstrap(directory: Path, copyCordapps: CopyCordapps, minimumPlatformVersion: Int, packageOwnership: Map<String, PublicKey?> = emptyMap()) {
         require(minimumPlatformVersion <= PLATFORM_VERSION) { "Minimum platform version cannot be greater than $PLATFORM_VERSION" }
         // Don't accidently include the bootstrapper jar as a CorDapp!
         val bootstrapperJar = javaClass.location.toPath()
         val cordappJars = directory.list { paths ->
-            paths.filter { it.toString().endsWith(".jar") && !it.isSameAs(bootstrapperJar) && it.fileName.toString() != "corda.jar" }.toList()
+            paths.filter { it.toString().endsWith(".jar") && !it.isSameAs(bootstrapperJar) && !jarsThatArentCordapps.contains(it.fileName.toString().toLowerCase())}.toList()
         }
         bootstrap(directory, cordappJars, copyCordapps, fromCordform = false, minimumPlatformVersion = minimumPlatformVersion, packageOwnership = packageOwnership)
     }
@@ -202,7 +206,7 @@ internal constructor(private val initSerEnv: Boolean,
     private fun bootstrap(
             directory: Path,
             cordappJars: List<Path>,
-            copyCordapps: Boolean,
+            copyCordapps: CopyCordapps,
             fromCordform: Boolean,
             minimumPlatformVersion: Int = PLATFORM_VERSION,
             packageOwnership: Map<String, PublicKey?> = emptyMap()
@@ -212,7 +216,7 @@ internal constructor(private val initSerEnv: Boolean,
         if (!fromCordform) {
             println("Found the following CorDapps: ${cordappJars.map { it.fileName }}")
         }
-        createNodeDirectoriesIfNeeded(directory, fromCordform)
+        val networkAlreadyExists = createNodeDirectoriesIfNeeded(directory, fromCordform)
         val nodeDirs = gatherNodeDirectories(directory)
 
         require(nodeDirs.isNotEmpty()) { "No nodes found" }
@@ -222,7 +226,7 @@ internal constructor(private val initSerEnv: Boolean,
 
         val configs = nodeDirs.associateBy({ it }, { ConfigFactory.parseFile((it / "node.conf").toFile()) })
         checkForDuplicateLegalNames(configs.values)
-        if (copyCordapps && cordappJars.isNotEmpty()) {
+        if ((copyCordapps == CopyCordapps.Yes || (copyCordapps == CopyCordapps.OnFirstRun && !networkAlreadyExists)) && cordappJars.isNotEmpty()) {
             println("Copying CorDapp JARs into node directories")
             for (nodeDir in nodeDirs) {
                 val cordappsDir = (nodeDir / "cordapps").createDirectories()
@@ -265,7 +269,8 @@ internal constructor(private val initSerEnv: Boolean,
         }
     }
 
-    private fun createNodeDirectoriesIfNeeded(directory: Path, fromCordform: Boolean) {
+    private fun createNodeDirectoriesIfNeeded(directory: Path, fromCordform: Boolean): Boolean {
+        var networkAlreadyExists = false
         val cordaJar = directory / "corda.jar"
         var usingEmbedded = false
         if (!cordaJar.exists()) {
@@ -281,6 +286,10 @@ internal constructor(private val initSerEnv: Boolean,
         for (confFile in confFiles) {
             val nodeName = confFile.fileName.toString().removeSuffix("_node.conf")
             println("Generating node directory for $nodeName")
+            if ((directory / nodeName).exists()) {
+                //directory already exists, so assume this network has been bootstrapped before
+                networkAlreadyExists = true
+            }
             val nodeDir = (directory / nodeName).createDirectories()
             confFile.copyTo(nodeDir / "node.conf", REPLACE_EXISTING)
             webServerConfFiles.firstOrNull { directory.relativize(it).toString().removeSuffix("_web-server.conf") == nodeName }?.copyTo(nodeDir / "web-server.conf", REPLACE_EXISTING)
@@ -302,6 +311,7 @@ internal constructor(private val initSerEnv: Boolean,
         if (fromCordform || usingEmbedded) {
             cordaJar.delete()
         }
+        return networkAlreadyExists
     }
 
     private fun gatherNodeDirectories(directory: Path): List<Path> {

@@ -6,6 +6,7 @@ import net.corda.core.internal.PLATFORM_VERSION
 import net.corda.core.internal.requirePackageValid
 import net.corda.nodeapi.internal.crypto.loadKeyStore
 import net.corda.nodeapi.internal.network.NetworkBootstrapper
+import net.corda.nodeapi.internal.network.NetworkBootstrapper.CopyCordapps
 import picocli.CommandLine
 import picocli.CommandLine.Option
 import java.io.IOException
@@ -28,8 +29,11 @@ class NetworkBootstrapperRunner : CordaCliWrapper("bootstrapper", "Bootstrap a l
     )
     var dir: Path = Paths.get(".")
 
-    @Option(names = ["--no-copy"], description = ["""Don't copy the CorDapp JARs into the nodes' "cordapps" directories."""])
-    var noCopy: Boolean = false
+    @Option(names = ["--no-copy"], hidden = true, description = ["""DEPRECATED. Don't copy the CorDapp JARs into the nodes' "cordapps" directories."""])
+    var noCopy: Boolean? = null
+
+    @Option(names = ["--copy-cordapps"], description = ["Whether or not to copy the CorDapp JARs into the nodes' 'cordapps' directory. \${COMPLETION-CANDIDATES}"])
+    var copyCordapps: NetworkBootstrapper.CopyCordapps = NetworkBootstrapper.CopyCordapps.OnFirstRun
 
     @Option(names = ["--minimum-platform-version"], description = ["The minimumPlatformVersion to use in the network-parameters."])
     var minimumPlatformVersion = PLATFORM_VERSION
@@ -55,8 +59,13 @@ class NetworkBootstrapperRunner : CordaCliWrapper("bootstrapper", "Bootstrap a l
     var unregisterPackageOwnership: List<String> = mutableListOf()
 
     override fun runProgram(): Int {
+        if (noCopy != null) {
+            printlnWarn("The --no-copy parameter has been deprecated and been replaced with the --copy-cordapps parameter.")
+            copyCordapps = if (noCopy == true) CopyCordapps.No else CopyCordapps.Yes
+        }
+
         NetworkBootstrapper().bootstrap(dir.toAbsolutePath().normalize(),
-                copyCordapps = !noCopy,
+                copyCordapps = copyCordapps,
                 minimumPlatformVersion = minimumPlatformVersion,
                 packageOwnership = registerPackageOwnership.map { Pair(it.javaPackageName, it.publicKey) }.toMap()
                         .plus(unregisterPackageOwnership.map { Pair(it, null) })
