@@ -15,6 +15,7 @@ import net.corda.core.internal.createComponentGroups
 import net.corda.core.node.NetworkParameters
 import net.corda.core.node.ServiceHub
 import net.corda.core.node.ServicesForResolution
+import net.corda.core.node.services.AttachmentId
 import net.corda.core.serialization.CordaSerializable
 import net.corda.core.serialization.SerializedBytes
 import net.corda.core.serialization.serialize
@@ -116,6 +117,7 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
     /**
      * Looks up identities, attachments and dependent input states using the provided lookup functions in order to
      * construct a [LedgerTransaction]. Note that identity lookup failure does *not* cause an exception to be thrown.
+     * This invocation doesn't cheeks contact class version downgrade rule.
      *
      * @throws AttachmentResolutionException if a required attachment was not found using [resolveAttachment].
      * @throws TransactionResolutionException if an input was not found not using [resolveStateRef].
@@ -126,10 +128,10 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
             resolveIdentity: (PublicKey) -> Party?,
             resolveAttachment: (SecureHash) -> Attachment?,
             resolveStateRef: (StateRef) -> TransactionState<*>?,
-            resolveContractAttachment: (StateRef) -> Attachment?
+            @Suppress("UNUSED_PARAMETER") resolveContractAttachment: (TransactionState<ContractState>) -> AttachmentId?
     ): LedgerTransaction {
         // This reverts to serializing the resolved transaction state.
-        return toLedgerTransactionInternal(resolveIdentity, resolveAttachment, { stateRef -> resolveStateRef(stateRef)?.serialize() }, null, resolveContractAttachment)
+        return toLedgerTransactionInternal(resolveIdentity, resolveAttachment, { stateRef -> resolveStateRef(stateRef)?.serialize() }, null, { null })
     }
 
     private fun toLedgerTransactionInternal(
