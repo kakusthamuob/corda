@@ -4,7 +4,9 @@ import net.corda.core.contracts.Attachment
 import net.corda.core.contracts.Contract
 import net.corda.core.internal.declaredField
 import net.corda.core.serialization.internal.AttachmentsClassLoader
+import net.corda.testing.core.ContractJarTestUtils.signContractJar
 import net.corda.testing.internal.fakeAttachment
+import net.corda.testing.internal.fakeAttachments
 import net.corda.testing.services.MockAttachmentStorage
 import org.apache.commons.io.IOUtils
 import org.junit.Assert.assertArrayEquals
@@ -48,6 +50,16 @@ class AttachmentsClassLoaderTests {
     }
 
     @Test
+    fun `Test valid overlapping contract jar`() {
+        val isolatedId = storage.importAttachment(ISOLATED_CONTRACTS_JAR_PATH.openStream(), "app", "isolated.jar")
+        val signedJar = signContractJar(ISOLATED_CONTRACTS_JAR_PATH, copyFirst = true)
+        val isolatedSignedId = storage.importAttachment(signedJar.first.toUri().toURL().openStream(), "app", "isolated-signed.jar")
+
+        // does not throw OverlappingAttachments exception
+        AttachmentsClassLoader(arrayOf(isolatedId, isolatedSignedId).map { storage.openAttachment(it)!! })
+    }
+
+    @Test
     fun `Load text resources from AttachmentsClassLoader`() {
         val att1 = storage.importAttachment(fakeAttachment("file1.txt", "some data").inputStream(), "app", "file1.jar")
         val att2 = storage.importAttachment(fakeAttachment("file2.txt", "some other data").inputStream(), "app", "file2.jar")
@@ -64,6 +76,16 @@ class AttachmentsClassLoaderTests {
     fun `Test overlapping file exception`() {
         val att1 = storage.importAttachment(fakeAttachment("file1.txt", "some data").inputStream(), "app", "file1.jar")
         val att2 = storage.importAttachment(fakeAttachment("file1.txt", "some other data").inputStream(), "app", "file2.jar")
+
+        assertFailsWith(AttachmentsClassLoader.Companion.OverlappingAttachments::class) {
+            AttachmentsClassLoader(arrayOf(att1, att2).map { storage.openAttachment(it)!! })
+        }
+    }
+
+    @Test
+    fun `Test overlapping file exception triggered by one of many attachments`() {
+        val att1 = storage.importAttachment(fakeAttachments( Pair("file1.txt", "some data"), Pair("file2.txt", "some more data")).inputStream(), "app", "file1.jar")
+        val att2 = storage.importAttachment(fakeAttachments( Pair("file1.txt", "some data"), Pair("file2.txt", "some more data2")).inputStream(), "app", "file2.jar")
 
         assertFailsWith(AttachmentsClassLoader.Companion.OverlappingAttachments::class) {
             AttachmentsClassLoader(arrayOf(att1, att2).map { storage.openAttachment(it)!! })

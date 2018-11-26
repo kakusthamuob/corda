@@ -2,6 +2,7 @@ package net.corda.core.serialization.internal
 
 import net.corda.core.contracts.Attachment
 import net.corda.core.contracts.ContractAttachment
+import net.corda.core.crypto.MerkleTree
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.sha256
 import net.corda.core.internal.VisibleForTesting
@@ -17,6 +18,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.*
+import java.util.jar.JarInputStream
 
 /**
  * A custom ClassLoader that knows how to load classes from a set of attachments. The attachments themselves only
@@ -59,41 +61,54 @@ class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader 
         }
 
         private fun requireNoDuplicates(attachments: List<Attachment>) {
-            val classLoaderEntries = mutableMapOf<String,Attachment>()
+            val classLoaderEntries = mutableMapOf<String, SecureHash>()
+            val attachmentContentMTHashes = mutableSetOf<SecureHash>()
             for (attachment in attachments) {
                 attachment.openAsJAR().use { jar ->
-                    while (true) {
-                        val entry = jar.nextJarEntry ?: break
-
-                        // We already verified that paths are not strange/game playing when we inserted the attachment
-                        // into the storage service. So we don't need to repeat it here.
-                        //
-                        // We forbid files that differ only in case, or path separator to avoid issues for Windows/Mac developers where the
-                        // filesystem tries to be case insensitive. This may break developers who attempt to use ProGuard.
-                        //
-                        // Also convert to Unix path separators as all resource/class lookups will expect this.
-                        //
-                        val path = entry.name.toLowerCase().replace('\\', '/')
-                        if (shouldCheckForNoOverlap(path)) {
-                            if (path in classLoaderEntries.keys) {
-                                // If 2 entries have the same content hash, it means the same file is present in both attachments, so that is ok.
-                                val contentHash = readAttachment(attachment, path).sha256()
-                                val originalAttachment = classLoaderEntries[path]!!
-                                val originalContentHash = readAttachment(originalAttachment, path).sha256()
-                                if (contentHash == originalContentHash) {
-                                    log.debug { "Duplicate entry $path has same content hash $contentHash" }
-                                    continue
+                    val attachmentEntries = calculateEntriesHashes(attachment, jar)
+                    if (attachmentEntries.isNotEmpty()) {
+                        val contentHashMT = MerkleTree.getMerkleTree(attachmentEntries.map { it.value }).hash
+                        if (attachmentContentMTHashes.contains(contentHashMT)) {
+                            log.debug { "Duplicate entry: ${attachment.id} has same content hash $contentHashMT as previous attachment" }
+                        }
+                        else {
+                            attachmentEntries.forEach { path, contentHash ->
+                                if (path in classLoaderEntries.keys) {
+                                    val originalContentHash = classLoaderEntries[path]!!
+                                    if (contentHash == originalContentHash) {
+                                        log.debug { "Duplicate entry $path has same content hash $contentHash" }
+                                    } else
+                                        throw OverlappingAttachments(path)
                                 }
-                                else
-                                    throw OverlappingAttachments(path)
                             }
-                            log.debug { "Adding new entry for $path" }
-                            classLoaderEntries[path] = attachment
+                            attachmentContentMTHashes.add(contentHashMT)
+                            classLoaderEntries.putAll(attachmentEntries)
                         }
                     }
                 }
-                log.debug { "${classLoaderEntries.size} classloaded entries for $attachment" }
             }
+        }
+
+        fun calculateEntriesHashes(attachment: Attachment, jar: JarInputStream): Map<String, SecureHash> {
+            val contentHashes = mutableMapOf<String, SecureHash>()
+            while (true) {
+                val entry = jar.nextJarEntry ?: break
+                if (entry.isDirectory) continue
+                // We already verified that paths are not strange/game playing when we inserted the attachment
+                // into the storage service. So we don't need to repeat it here.
+                //
+                // We forbid files that differ only in case, or path separator to avoid issues for Windows/Mac developers where the
+                // filesystem tries to be case insensitive. This may break developers who attempt to use ProGuard.
+                //
+                // Also convert to Unix path separators as all resource/class lookups will expect this.
+                //
+                val filepath = entry.name.toLowerCase().replace('\\', '/')
+                if (shouldCheckForNoOverlap(filepath)) {
+                    val contentHash = readAttachment(attachment, filepath).sha256()
+                    contentHashes[filepath] = contentHash
+                }
+            }
+            return contentHashes
         }
 
         @VisibleForTesting
