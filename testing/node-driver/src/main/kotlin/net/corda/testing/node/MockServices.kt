@@ -40,6 +40,7 @@ import net.corda.testing.core.TestIdentity
 import net.corda.testing.internal.DEV_ROOT_CA
 import net.corda.testing.internal.MockCordappProvider
 import net.corda.testing.internal.configureDatabase
+import net.corda.testing.internal.withTestSerializationEnvIfNotSet
 import net.corda.testing.node.internal.*
 import net.corda.testing.services.MockAttachmentStorage
 import java.security.KeyPair
@@ -70,7 +71,7 @@ open class MockServices private constructor(
         cordappLoader: CordappLoader,
         override val validatedTransactions: TransactionStorage,
         override val identityService: IdentityService,
-        final override val networkParameters: NetworkParameters,
+        private val initialNetworkParameters: NetworkParameters,
         private val initialIdentity: TestIdentity,
         private val moreKeys: Array<out KeyPair>
 ) : ServiceHub {
@@ -122,7 +123,7 @@ open class MockServices private constructor(
             val mockService = database.transaction {
                 object : MockServices(cordappLoader, identityService, networkParameters, initialIdentity, moreKeys) {
                     override val vaultService: VaultService = makeVaultService(schemaService, database)
-                    override val networkParametersStorage get() = MockNetworkParametersStorage(networkParameters)
+                    override val networkParametersStorage: NetworkParametersStorage = MockNetworkParametersStorage(networkParameters)
                     override fun recordTransactions(statesToRecord: StatesToRecord, txs: Iterable<SignedTransaction>) {
                         ServiceHubInternal.recordTransactions(statesToRecord, txs,
                                 validatedTransactions as WritableTransactionStorage,
@@ -253,6 +254,9 @@ open class MockServices private constructor(
         }
     }
 
+    override val networkParameters: NetworkParameters
+        get() = networkParametersStorage.run { readParametersFromHash(currentParametersHash)!! }
+
     final override val attachments = MockAttachmentStorage()
     override val keyManagementService: KeyManagementService by lazy { MockKeyManagementService(identityService, *arrayOf(initialIdentity.keyPair) + moreKeys) }
     override val vaultService: VaultService get() = throw UnsupportedOperationException()
@@ -265,10 +269,10 @@ open class MockServices private constructor(
         }
     override val transactionVerifierService: TransactionVerifierService get() = InMemoryTransactionVerifierService(2)
     private val mockCordappProvider: MockCordappProvider = MockCordappProvider(cordappLoader, attachments).also {
-        it.start(networkParameters.whitelistedContractImplementations)
+        it.start(initialNetworkParameters.whitelistedContractImplementations)
     }
     override val cordappProvider: CordappProvider get() = mockCordappProvider
-    override val networkParametersStorage: NetworkParametersStorage get() = MockNetworkParametersStorage(networkParameters)
+    override val networkParametersStorage: NetworkParametersStorage = MockNetworkParametersStorage(initialNetworkParameters)
 
     protected val servicesForResolution: ServicesForResolution
         get() {
@@ -356,9 +360,14 @@ class MockNetworkParametersStorage(private var currentParameters: NetworkParamet
         return getNotaryInfo(party)?.validating ?: throw IllegalStateException("Party $party is not a notary on the network")
     }
 
-    override val currentParametersHash: SecureHash get() = currentParameters.serialize().hash
+    override val currentParametersHash: SecureHash
+        get() {
+            return withTestSerializationEnvIfNotSet("networkParameters") {
+                currentParameters.serialize().hash
+            }
+        }
     override val defaultParametersHash: SecureHash get() = currentParametersHash
-    override fun getEpochFromHash(hash: SecureHash): Int?  = readParametersFromHash(hash)?.epoch
+    override fun getEpochFromHash(hash: SecureHash): Int? = readParametersFromHash(hash)?.epoch
     override fun readParametersFromHash(hash: SecureHash): NetworkParameters? = hashToParametersMap[hash]
     override fun saveParameters(signedNetworkParameters: SignedDataWithCert<NetworkParameters>) {
         val networkParameters = signedNetworkParameters.verified()
