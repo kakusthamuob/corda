@@ -135,7 +135,7 @@ class TransactionTests {
                 privacySalt,
                 testNetworkParameters(),
                 emptyList(),
-                inputStatesContractClassNameToVersions = emptyMap()
+                inputStatesContractClassNameToMaxVersion= emptyMap()
         )
 
         transaction.verify()
@@ -179,7 +179,7 @@ class TransactionTests {
                 privacySalt,
                 null,
                 emptyList(),
-                inputStatesContractClassNameToVersions = emptyMap()
+                inputStatesContractClassNameToMaxVersion = emptyMap()
         )
 
         assertFailsWith<TransactionVerificationException.NotaryChangeInWrongTransactionType> { buildTransaction() }
